@@ -1,0 +1,98 @@
+import numpy as np
+import scipy.sparse as sp
+from scipy.sparse.linalg import spsolve
+import matplotlib.pyplot as plt
+from matplotlib.animation import FuncAnimation
+
+# CREATION DU MAILLAGE ET PARAMETRES DU PROBLEME
+
+L = 1.0   #longuer du domaine
+Nx = 200    # Nombre de points
+dx = L / Nx    # Pas spatial
+T = 1.0    # Temps final
+Nt = 400       # Nombre de pas de temps
+dt = T / Nt   # Pas de temps
+
+D = 0.01   # Diffusion
+v = -1.0    # Advection
+K = 4   # Capacité max de la population
+B = 1.0   # Majorant u^2 <= B u
+
+# CONDITION INITIALE
+x = np.linspace(0, L, Nx+1)
+
+def u0(x):
+    return np.exp(-100*(x-0.3)**2)
+
+u_old = u0(x)
+
+# CONSTRUCTION DE LA MATRICE A (EULEUR IMPLICITE)
+# pour alléger les notation
+alpha = D / dx**2       
+beta  = v / dx         
+gamma = 1 - B/K     
+
+offsets = np.array([-1, 0, 1])  # créé une matrice tri-diagonal 
+
+sous_diag = -dt*alpha                                # coeff u_{i-1}
+diag  = 1 + dt*(2*alpha - beta + gamma)          # coeff u_i
+sur_diag = -dt*(alpha + (-beta))                    # coeff u_{i+1}
+
+data = [
+    sous_diag * np.ones(Nx+1),    # sous-diagonale
+    diag  * np.ones(Nx+1),    # diagonale
+    sur_diag * np.ones(Nx+1)     # sur-diagonale
+]
+
+A = sp.dia_matrix((data, offsets), shape=(Nx+1, Nx+1)).tocsc()
+
+
+# CONDITIONS DE DIRICHLET
+
+# A[0, :] = 0
+# A[0, 0] = 1
+
+# A[Nx, :] = 0
+# A[Nx, Nx] = 1
+
+# CONDITIONS DE NEUMANN
+
+# Bord gauche : u_1 - u_0 = 0
+A[0, :] = 0
+A[0, 0] = -1
+A[0, 1] =  1
+# Bord droit : u_I - u_{I-1} = 0
+A[Nx, :] = 0
+A[Nx, Nx]   =  1
+A[Nx, Nx-1] = -1
+
+# CREATION ANIMATION 
+
+fig, ax = plt.subplots()
+line, = ax.plot(x, u_old)
+ax.set_ylim(-0.2, 1.5)
+ax.set_xlabel("x")
+ax.set_ylabel("u(x,t)")
+
+
+# RESOLUTION DU SCHEMA 
+
+def un_pas(frame):
+    global u_old
+    b = u_old.copy()
+    # condition limite dans RHS
+    b[0] = 0
+    b[-1] = 0
+    u_new = spsolve(A, b) # on resoule systeme
+    u_old = u_new.copy()   # mise a jour
+    u_old[0] = 0
+    u_old[-1] = 0
+
+    # Mise à jour graphique
+    line.set_ydata(u_new)
+    ax.set_title(f"t = {frame*dt:.4f}")
+
+    return line,
+
+ani = FuncAnimation(fig, un_pas, frames=Nt, interval=20)
+plt.show()
