@@ -1,22 +1,35 @@
 import numpy as np
-import scipy.sparse as sp
-from scipy.sparse.linalg import spsolve
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
-
+import sys
 # CREATION DU MAILLAGE ET PARAMETRES DU PROBLEME
 
 L = 1.0   #longuer du domaine
-Nx = 200    # Nombre de points
+Nx = 100    # Nombre de points
 dx = L / Nx    # Pas spatial
 T = 1.0    # Temps final
-Nt = 400       # Nombre de pas de temps
+Nt = 80000       # Nombre de pas de temps
 dt = T / Nt   # Pas de temps
 
-D = 0.01   # Diffusion
-v = -1.0    # Advection
-K = 4   # Capacité max de la population
-B = 1.0   # Majorant u^2 <= B u
+
+D = 3  # Diffusion  avec Nx= 100 et Nt = 80000 D pas plus grand que 4
+
+def c(x):        # Advection
+    return x #toujours positive et on a une variations qui depend de x
+
+def c_pos(x):
+    return 0.5 * (c(x) + np.abs(c(x)))
+
+def c_neg(x):
+    return 0.5 * (np.abs(c(x)) - c(x))
+
+
+K = 20   # Capacité max de la population
+r = -3
+B = 40.0  # Majorant u^2 <= B u
+
+
+
 
 # CONDITION INITIALE
 x = np.linspace(0, L, Nx+1)
@@ -26,72 +39,76 @@ def u0(x):
 
 u_old = u0(x)
 
-# CONSTRUCTION DE LA MATRICE A (EULEUR IMPLICITE)
-# pour alléger les notation
-alpha = D / dx**2       
-beta  = v / dx         
-gamma = 1 - B/K     
+# VERIFICATION CFL
+# cmax sur le maillage
+c_vals = np.array([c(xi) for xi in x])          
+cmax = np.max(np.abs(c_vals))
 
-offsets = np.array([-1, 0, 1])  # créé une matrice tri-diagonal 
+CFL_adv  = cmax * dt / dx                       # doit être <= 1 (upwind explicite)
+CFL_diff = D * dt / dx**2                       # doit être <= 0.5 (diffusion explicite)
 
-sous_diag = -dt*alpha                                # coeff u_{i-1}
-diag  = 1 + dt*(2*alpha - beta + gamma)          # coeff u_i
-sur_diag = -dt*(alpha + (-beta))                    # coeff u_{i+1}
+ok_adv  = (CFL_adv  <= 1.0 + 1e-12)             # petite tolérance numérique
+ok_diff = (CFL_diff <= 0.5 + 1e-12)
 
-data = [
-    sous_diag * np.ones(Nx+1),    # sous-diagonale
-    diag  * np.ones(Nx+1),    # diagonale
-    sur_diag * np.ones(Nx+1)     # sur-diagonale
-]
+print("CFL_adv  = {CFL_adv}  <= 1")
+print("CFL_diff = {CFL_diff} <= 0.5")
 
-A = sp.dia_matrix((data, offsets), shape=(Nx+1, Nx+1)).tocsc()
+if not ok_adv:
+    print("CFL advection nok")
 
+if not ok_diff:
+    print("Stabilité diffusion nok")
 
-# CONDITIONS DE DIRICHLET
-
-# A[0, :] = 0
-# A[0, 0] = 1
-
-# A[Nx, :] = 0
-# A[Nx, Nx] = 1
-
-# CONDITIONS DE NEUMANN
-
-# Bord gauche : u_1 - u_0 = 0
-A[0, :] = 0
-A[0, 0] = -1
-A[0, 1] =  1
-# Bord droit : u_I - u_{I-1} = 0
-A[Nx, :] = 0
-A[Nx, Nx]   =  1
-A[Nx, Nx-1] = -1
-
-# CREATION ANIMATION 
-
+if not (ok_adv and ok_diff):
+    print("STOP")
+    sys.exit()
+# CREATION ANIMATION
 fig, ax = plt.subplots()
 line, = ax.plot(x, u_old)
 ax.set_ylim(-0.2, 1.5)
 ax.set_xlabel("x")
 ax.set_ylabel("u(x,t)")
 
+# RESOLUTION DU SCHEMA (EULER EXPLICITE)
 
-# RESOLUTION DU SCHEMA 
-
-def un_pas(frame):
+def un_pas(frame): #frame pour print anim
     global u_old
-    b = u_old.copy()
-    # condition limite dans RHS
-    b[0] = 0
-    b[-1] = 0
-    u_new = spsolve(A, b) # on resoule systeme
-    u_old = u_new.copy()   # mise a jour
-    u_old[0] = 0
-    u_old[-1] = 0
 
-    # Mise à jour graphique
+    u_new = u_old.copy()
+
+    # Euler explicite sur i=1,...,Nx-1 
+
+    for i in range(1, Nx):
+        ci_pos = c_pos(x[i])
+        ci_neg = c_neg(x[i])
+    
+        lam = (1
+                   + dt * r
+                   - dt * r * B / K
+                   - 2 * dt * D / dx**2
+                   + dt * (ci_pos + ci_neg) / dx)
+    
+        lam_plus = dt * D / dx**2 - dt * ci_neg / dx
+        lam_moins = dt * D / dx**2 - dt * ci_pos / dx
+    
+        u_new[i] = (lam * u_old[i]
+                        + lam_plus * u_old[i+1]
+                        + lam_moins * u_old[i-1])
+    # Dirichlet
+    u_new[0]  = 0.0
+    u_new[-1] = 0.0
+    #u_new[0] = u_new[1]
+    #u_new[-1] = u_new[-2]
+
+    # sécurité anti-NaN
+    if not np.all(np.isfinite(u_new)):
+        print("NaN/Inf détecté à t =", frame*dt)
+        u_new = np.nan_to_num(u_new, nan=0.0, posinf=0.0, neginf=0.0)
+
+    u_old = u_new
+
     line.set_ydata(u_new)
     ax.set_title(f"t = {frame*dt:.4f}")
-
     return line,
 
 ani = FuncAnimation(fig, un_pas, frames=Nt, interval=20)
